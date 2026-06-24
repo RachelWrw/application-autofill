@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Job Autofill icon</title>
+  <desc id="desc">A document with filled lines and a check mark.</desc>
+  <rect width="128" height="128" rx="26" fill="#1769aa"/>
+  <path d="M40 22h38l20 20v64H40z" fill="#ffffff"/>
+  <path d="M78 22v20h20z" fill="#d7ecfb"/>
+  <rect x="52" y="54" width="42" height="7" rx="3.5" fill="#8bb9d9"/>
+  <rect x="52" y="70" width="34" height="7" rx="3.5" fill="#8bb9d9"/>
+  <rect x="52" y="86" width="27" height="7" rx="3.5" fill="#8bb9d9"/>
+  <circle cx="42" cy="84" r="22" fill="#21a67a"/>
+  <path d="M31 84l8 8 15-18" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

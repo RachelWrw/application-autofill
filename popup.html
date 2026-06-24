@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Job Autofill</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-icon" src="icons/icon.svg" alt="" aria-hidden="true">
+          <div>
+            <h1>Job Autofill</h1>
+            <p id="status" class="status">Ready</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="refreshResume" class="link-button" type="button">Refresh</button>
+          <button id="toggleEdit" class="link-button" type="button">Edit</button>
+        </div>
+      </header>
+
+      <section class="profile-card">
+        <div id="profileAvatar" class="avatar">JA</div>
+        <div class="profile-copy-list">
+          <button id="summaryName" class="copy-value name-value" type="button" data-copy="">Your Name</button>
+          <button id="summaryLocation" class="copy-value" type="button" data-copy="">City, State</button>
+          <button id="summaryEmail" class="copy-value" type="button" data-copy="">Email</button>
+          <button id="summaryPhone" class="copy-value" type="button" data-copy="">Phone</button>
+          <button id="summaryLinkedin" class="copy-value subtle-copy" type="button" data-copy="">LinkedIn</button>
+        </div>
+      </section>
+
+      <section class="quick-actions">
+        <button id="clearPage" class="ghost" type="button">Clear</button>
+        <button id="fillPage" class="primary" type="button">Fill Page</button>
+      </section>
+
+      <section id="editPanel" class="panel edit-panel" hidden>
+        <div class="section-heading">
+          <h2>Profile</h2>
+          <button id="saveProfile" class="ghost" type="button">Save</button>
+        </div>
+
+        <form id="profileForm" autocomplete="off">
+          <label>
+            <span>First name</span>
+            <input name="firstName" autocomplete="given-name">
+          </label>
+          <label>
+            <span>Last name</span>
+            <input name="lastName" autocomplete="family-name">
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="email">
+          </label>
+          <label>
+            <span>Phone</span>
+            <input name="phone" type="tel" autocomplete="tel">
+          </label>
+          <label>
+            <span>City</span>
+            <input name="city" autocomplete="address-level2">
+          </label>
+          <label>
+            <span>State</span>
+            <input name="state" autocomplete="address-level1">
+          </label>
+          <label class="wide">
+            <span>Street address</span>
+            <input name="address" autocomplete="street-address">
+          </label>
+          <label class="wide">
+            <span>Address line 2</span>
+            <input name="address2" autocomplete="address-line2">
+          </label>
+          <label>
+            <span>ZIP code</span>
+            <input name="zip" autocomplete="postal-code">
+          </label>
+          <label class="wide">
+            <span>LinkedIn URL</span>
+            <input name="linkedin" type="url">
+          </label>
+          <label class="wide">
+            <span>Portfolio / website</span>
+            <input name="website" type="url">
+          </label>
+          <label class="wide">
+            <span>GitHub URL</span>
+            <input name="github" type="url">
+          </label>
+          <label class="wide">
+            <span>Additional URL</span>
+            <input name="additionalLink" type="url">
+          </label>
+          <label class="wide">
+            <span>Skills</span>
+            <input name="skills" placeholder="Excel, SQL, Tableau">
+          </label>
+          <label class="wide">
+            <span>Languages</span>
+            <input name="languages" placeholder="English, Spanish">
+          </label>
+        </form>
+      </section>
+
+      <section class="panel resume-panel">
+        <div class="section-heading">
+          <h2>Resume source</h2>
+          <div class="resume-controls">
+            <label class="file-button">
+              Upload
+              <input id="resumeFile" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+            </label>
+            <button id="deleteResume" class="file-button" type="button">Remove</button>
+          </div>
+        </div>
+        <div id="resumeUploadRow" class="resource-row"></div>
+      </section>
+
+      <section class="panel links-panel">
+        <div class="section-heading">
+          <h2>Links</h2>
+        </div>
+        <div id="linkEntries" class="resource-list"></div>
+      </section>
+
+      <section class="panel repeat-panel">
+        <div class="section-heading">
+          <h2>Education</h2>
+        </div>
+        <div id="educationEntries" class="entry-list"></div>
+      </section>
+
+      <section class="panel repeat-panel">
+        <div class="section-heading">
+          <h2>Work</h2>
+        </div>
+        <div id="experienceEntries" class="entry-list"></div>
+      </section>
+
+      <section class="panel chips-panel">
+        <div class="section-heading">
+          <h2>Skills</h2>
+        </div>
+        <div id="skillChips" class="chip-list"></div>
+      </section>
+
+      <section class="panel chips-panel">
+        <div class="section-heading">
+          <h2>Languages</h2>
+        </div>
+        <div id="languageChips" class="chip-list"></div>
+      </section>
+
+      <section class="panel custom-panel">
+        <div class="section-heading">
+          <h2>Custom answers</h2>
+          <button id="addCustom" class="ghost" type="button">Add</button>
+        </div>
+        <div id="customFields" class="custom-fields"></div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
