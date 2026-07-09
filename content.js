@@ -1,7 +1,7 @@
 const FIELD_MATCHERS = [
+  { keys: ["first and last name", "first last name", "full name", "candidate name", "legal name", "preferred name", "name"], field: "fullName" },
   { keys: ["first name", "firstname", "given name", "given-name", "fname"], field: "firstName" },
   { keys: ["last name", "lastname", "family name", "family-name", "lname", "surname"], field: "lastName" },
-  { keys: ["full name", "candidate name", "legal name", "preferred name", "name"], field: "fullName" },
   { keys: ["email", "e-mail"], field: "email" },
   { keys: ["phone", "mobile", "cell", "telephone"], field: "phone" },
   { keys: ["address line 2", "address 2", "address2", "apt", "apartment", "suite", "unit"], field: "address2" },
@@ -10,7 +10,7 @@ const FIELD_MATCHERS = [
   { keys: ["state", "province", "region"], field: "state" },
   { keys: ["zip", "postal", "postcode"], field: "zip" },
   { keys: ["linkedin", "linked in"], field: "linkedin" },
-  { keys: ["portfolio", "website", "personal site", "url"], field: "website" },
+  { keys: ["portfolio", "personal website", "personal site", "website"], field: "website" },
   { keys: ["github", "git hub"], field: "github" },
   { keys: ["current company", "employer", "company"], field: "company" },
   { keys: ["current title", "job title", "title", "position"], field: "title" },
@@ -92,6 +92,8 @@ const STATE_ALIASES = {
 
 const filledOriginals = new WeakMap();
 const filledFields = new Set();
+const STORAGE_KEY = "jobAutofillProfile";
+const FLOATING_BUTTON_ID = "job-autofill-floating-button";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "JOB_AUTOFILL_FILL") {
@@ -120,6 +122,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return false;
 });
+
+maybeAddFloatingFillButton();
 
 function fillJobApplication(profile) {
   let count = 0;
@@ -151,6 +155,119 @@ function fillJobApplication(profile) {
   });
 
   return count;
+}
+
+function maybeAddFloatingFillButton() {
+  if (document.getElementById(FLOATING_BUTTON_ID)) {
+    return;
+  }
+
+  const addButton = () => {
+    if (document.getElementById(FLOATING_BUTTON_ID) || getFillableFields().length === 0) {
+      return false;
+    }
+
+    const button = document.createElement("button");
+    button.id = FLOATING_BUTTON_ID;
+    button.type = "button";
+    button.textContent = "Fill";
+    button.title = "Fill job application fields";
+    button.setAttribute("aria-label", "Fill job application fields");
+    Object.assign(button.style, {
+      position: "fixed",
+      right: "16px",
+      top: "16px",
+      zIndex: "2147483647",
+      border: "0",
+      borderRadius: "999px",
+      padding: "10px 16px",
+      background: "#1769aa",
+      color: "#ffffff",
+      font: "600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      boxShadow: "0 8px 24px rgba(15, 23, 42, 0.24)",
+      cursor: "pointer"
+    });
+    button.addEventListener("mouseenter", () => {
+      button.style.background = "#0f5f9e";
+    });
+    button.addEventListener("mouseleave", () => {
+      button.style.background = "#1769aa";
+    });
+    button.addEventListener("click", handleFloatingFillClick);
+    document.body.append(button);
+    return true;
+  };
+
+  if (document.body) {
+    addButton();
+  } else {
+    document.addEventListener("DOMContentLoaded", addButton, { once: true });
+  }
+
+  window.setTimeout(addButton, 800);
+
+  if (window.MutationObserver) {
+    const observer = new MutationObserver(() => {
+      if (addButton()) {
+        observer.disconnect();
+      }
+    });
+
+    const startObserver = () => {
+      if (!document.body || document.getElementById(FLOATING_BUTTON_ID)) {
+        return;
+      }
+
+      observer.observe(document.body, { childList: true, subtree: true });
+      window.setTimeout(() => observer.disconnect(), 15000);
+    };
+
+    if (document.body) {
+      startObserver();
+    } else {
+      document.addEventListener("DOMContentLoaded", startObserver, { once: true });
+    }
+  }
+}
+
+async function handleFloatingFillClick(event) {
+  const button = event.currentTarget;
+  const originalText = button.textContent;
+
+  button.disabled = true;
+  button.textContent = "Filling";
+
+  try {
+    const profile = await loadSavedProfile();
+    if (!profile || Object.keys(profile).length === 0) {
+      button.textContent = "No profile";
+      window.setTimeout(() => {
+        button.textContent = originalText;
+        button.disabled = false;
+      }, 1400);
+      return;
+    }
+
+    const count = fillJobApplication(profile);
+    button.textContent = `Filled ${count}`;
+  } catch (_error) {
+    button.textContent = "Try popup";
+  }
+
+  window.setTimeout(() => {
+    button.textContent = originalText;
+    button.disabled = false;
+  }, 1400);
+}
+
+async function loadSavedProfile() {
+  const localResult = await chrome.storage.local.get(STORAGE_KEY);
+  if (localResult?.[STORAGE_KEY]) {
+    return localResult[STORAGE_KEY];
+  }
+
+  const syncResult = await chrome.storage.sync.get(STORAGE_KEY);
+  return syncResult?.[STORAGE_KEY] || {};
 }
 
 function clearFilledFields() {
@@ -226,11 +343,74 @@ function getBaseMatch(context, profile) {
 function isDisqualifiedMatch(context, field) {
   const text = context.all.join(" ");
 
+  if (["fullName", "firstName", "lastName"].includes(field) && isReferralOrSourceContext(context)) {
+    return true;
+  }
+
+  if (["fullName", "firstName", "lastName"].includes(field) && isNamePronunciationContext(context)) {
+    return true;
+  }
+
+  if ((field === "firstName" || field === "lastName") && isCombinedNameContext(context)) {
+    return true;
+  }
+
+  if (field === "phone" && isPhoneExtensionContext(context)) {
+    return true;
+  }
+
   if (field === "address" || field === "address2") {
     return includesPhrase(text, "email") || includesPhrase(text, "e mail");
   }
 
+  if (field === "website") {
+    return isGenericUrlContext(context);
+  }
+
   return false;
+}
+
+function isNamePronunciationContext(context) {
+  const text = context.all.join(" ");
+  const pronunciationWords = ["pronunciation", "pronouciation", "pronounce", "phonetic", "name pronunciation"];
+
+  return pronunciationWords.some((word) => includesPhrase(text, word));
+}
+
+function isPhoneExtensionContext(context) {
+  const text = context.all.join(" ");
+  const extensionWords = ["phone extension", "extension", "ext"];
+
+  return extensionWords.some((word) => includesPhrase(text, word));
+}
+
+function isReferralOrSourceContext(context) {
+  const text = context.all.join(" ");
+  const referralWords = ["referral", "referring", "referred", "employee referral", "referring person"];
+  const sourceWords = ["heard about us", "hear about us", "where you heard", "how did you hear", "source"];
+
+  return (
+    referralWords.some((word) => includesPhrase(text, word)) ||
+    sourceWords.some((word) => includesPhrase(text, word))
+  );
+}
+
+function isCombinedNameContext(context) {
+  const text = context.all.join(" ");
+
+  return (
+    includesPhrase(text, "first and last name") ||
+    includesPhrase(text, "first last name") ||
+    (includesPhrase(text, "first") && includesPhrase(text, "last") && includesPhrase(text, "name"))
+  );
+}
+
+function isGenericUrlContext(context) {
+  const text = context.all.join(" ");
+  const allowed = ["portfolio", "personal website", "personal site", "website"];
+  const generic = ["url", "link", "links", "homepage", "home page"];
+
+  return generic.some((word) => includesPhrase(text, word)) && !allowed.some((word) => includesPhrase(text, word));
 }
 
 function getRepeatMatch(context, profile, usage) {
