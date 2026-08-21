@@ -1,4 +1,6 @@
 const STORAGE_KEY = "jobAutofillProfile";
+const FLOATING_BUTTON_COMMAND_KEY = "jobAutofillFloatingButtonCommand";
+const FLOATING_BUTTON_VISIBLE_KEY = "jobAutofillFloatingButtonVisible";
 
 const form = document.querySelector("#profileForm");
 const statusEl = document.querySelector("#status");
@@ -21,6 +23,8 @@ const summaryLinkedin = document.querySelector("#summaryLinkedin");
 const saveButton = document.querySelector("#saveProfile");
 const fillButton = document.querySelector("#fillPage");
 const clearButton = document.querySelector("#clearPage");
+const showFloatingButton = document.querySelector("#showFloatingButton");
+const hideFloatingButton = document.querySelector("#hideFloatingButton");
 const addCustomButton = document.querySelector("#addCustom");
 const refreshResumeButton = document.querySelector("#refreshResume");
 const toggleEditButton = document.querySelector("#toggleEdit");
@@ -1064,9 +1068,62 @@ async function clearPage() {
   }
 }
 
+async function showPageButton() {
+  await saveProfile();
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!tab?.id) {
+    setStatus("No active tab found");
+    return;
+  }
+
+  try {
+    await chrome.storage.local.set({
+      [FLOATING_BUTTON_VISIBLE_KEY]: true,
+      [FLOATING_BUTTON_COMMAND_KEY]: {
+        action: "show",
+        issuedAt: Date.now()
+      }
+    });
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "JOB_AUTOFILL_SHOW_FLOATING_BUTTON"
+    }).catch(() => {});
+    setStatus("Button shown");
+  } catch (error) {
+    setStatus("Refresh the page, then try again");
+  }
+}
+
+async function hidePageButton() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!tab?.id) {
+    setStatus("No active tab found");
+    return;
+  }
+
+  try {
+    await chrome.storage.local.set({
+      [FLOATING_BUTTON_VISIBLE_KEY]: false,
+      [FLOATING_BUTTON_COMMAND_KEY]: {
+        action: "hide",
+        issuedAt: Date.now()
+      }
+    });
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "JOB_AUTOFILL_HIDE_FLOATING_BUTTON"
+    }).catch(() => {});
+    setStatus("Button hidden");
+  } catch (error) {
+    setStatus("Refresh the page, then try again");
+  }
+}
+
 saveButton.addEventListener("click", saveProfile);
 fillButton.addEventListener("click", fillPage);
 clearButton.addEventListener("click", clearPage);
+showFloatingButton.addEventListener("click", showPageButton);
+hideFloatingButton.addEventListener("click", hidePageButton);
 addCustomButton.addEventListener("click", addCustomAnswer);
 refreshResumeButton.addEventListener("click", refreshResumeEntries);
 resumeFileEl.addEventListener("change", handleResumeFile);

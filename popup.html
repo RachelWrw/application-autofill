@@ -36,6 +36,8 @@
       <section class="quick-actions">
         <button id="clearPage" class="ghost" type="button">Clear</button>
         <button id="fillPage" class="primary" type="button">Fill Page</button>
+        <button id="hideFloatingButton" class="ghost" type="button">Hide Button</button>
+        <button id="showFloatingButton" class="ghost" type="button">Show Button</button>
       </section>
 
       <section id="editPanel" class="panel edit-panel" hidden>
@@ -104,6 +106,22 @@
           <label class="wide">
             <span>Languages</span>
             <input name="languages" placeholder="English, Spanish">
+          </label>
+          <label class="wide">
+            <span>Legally authorized to work in the United States?</span>
+            <select name="workAuthorization">
+              <option value="">Select</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label class="wide">
+            <span>Require employment visa sponsorship?</span>
+            <select name="sponsorship">
+              <option value="">Select</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
           </label>
         </form>
       </section>

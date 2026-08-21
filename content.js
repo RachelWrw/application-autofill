@@ -16,8 +16,8 @@ const FIELD_MATCHERS = [
   { keys: ["current title", "job title", "title", "position"], field: "title" },
   { keys: ["skills", "technical skills", "core skills", "competencies"], field: "skillsText" },
   { keys: ["languages", "language"], field: "languagesText" },
-  { keys: ["authorized", "authorised", "work authorization", "eligible to work"], field: "workAuthorization" },
-  { keys: ["sponsorship", "visa sponsorship", "require sponsorship"], field: "sponsorship" }
+  { keys: ["legally authorized to work in the country", "authorized to work in the country", "legally authorized to work in the united states", "authorized to work in the united states", "authorized", "authorised", "work authorization", "eligible to work"], field: "workAuthorization" },
+  { keys: ["will you now or in the future require sponsorship", "require sponsorship for employment visa status", "employment visa status", "sponsorship", "visa sponsorship", "require sponsorship"], field: "sponsorship" }
 ];
 
 const EDUCATION_MATCHERS = [
@@ -93,7 +93,11 @@ const STATE_ALIASES = {
 const filledOriginals = new WeakMap();
 const filledFields = new Set();
 const STORAGE_KEY = "jobAutofillProfile";
+const FLOATING_BUTTON_COMMAND_KEY = "jobAutofillFloatingButtonCommand";
+const FLOATING_BUTTON_VISIBLE_KEY = "jobAutofillFloatingButtonVisible";
 const FLOATING_BUTTON_ID = "job-autofill-floating-button";
+const FLOATING_BUTTON_MARGIN = 8;
+let floatingButtonObserver = null;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "JOB_AUTOFILL_FILL") {
@@ -120,10 +124,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "JOB_AUTOFILL_SHOW_FLOATING_BUTTON") {
+    sendResponse({ shown: showFloatingFillButton() });
+    return false;
+  }
+
+  if (message?.type === "JOB_AUTOFILL_HIDE_FLOATING_BUTTON") {
+    sendResponse({ removed: hideFloatingFillButton() });
+    return false;
+  }
+
   return false;
 });
 
-maybeAddFloatingFillButton();
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  if (changes[FLOATING_BUTTON_VISIBLE_KEY]) {
+    setFloatingButtonVisible(changes[FLOATING_BUTTON_VISIBLE_KEY].newValue === true);
+  }
+
+  if (changes[FLOATING_BUTTON_COMMAND_KEY]?.newValue) {
+    handleFloatingButtonCommand(changes[FLOATING_BUTTON_COMMAND_KEY].newValue);
+  }
+});
+
+restoreFloatingButtonVisibility();
 
 function fillJobApplication(profile) {
   let count = 0;
@@ -131,131 +159,333 @@ function fillJobApplication(profile) {
   const usage = {};
 
   fields.forEach((field) => {
-    if (field.disabled || field.readOnly || field.type === "hidden") {
-      return;
-    }
-
-    const context = getFieldContext(field);
-    const match = getProfileMatch(context, profile, usage);
-
-    if (!match?.value) {
-      return;
-    }
-
-    if (requiresRequiredField(match.field) && !isRequiredField(field)) {
-      return;
-    }
-
-    if (applyValue(field, match.value, match.field)) {
-      if (match.repeatKey) {
-        usage[match.repeatKey] = (usage[match.repeatKey] || 0) + 1;
+    try {
+      if (field.disabled || field.readOnly || getInputType(field) === "hidden") {
+        return;
       }
-      count += 1;
+
+      const context = getFieldContext(field);
+      const match = getProfileMatch(context, profile, usage, field);
+
+      if (!match?.value) {
+        return;
+      }
+
+      if (requiresRequiredField(match.field) && !isRequiredField(field)) {
+        return;
+      }
+
+      if (applyValue(field, match.value, match.field)) {
+        if (match.repeatKey) {
+          usage[match.repeatKey] = (usage[match.repeatKey] || 0) + 1;
+        }
+        count += 1;
+      }
+    } catch (error) {
+      console.warn("Job Autofill skipped a field after an error.", error, field);
     }
   });
 
   return count;
 }
 
-function maybeAddFloatingFillButton() {
-  if (document.getElementById(FLOATING_BUTTON_ID)) {
+function handleFloatingButtonCommand(command) {
+  if (!command?.action || document.visibilityState === "hidden") {
     return;
   }
 
-  const addButton = () => {
-    if (document.getElementById(FLOATING_BUTTON_ID) || getFillableFields().length === 0) {
-      return false;
+  if (Date.now() - Number(command.issuedAt || 0) > 5000) {
+    return;
+  }
+
+  if (command.action === "show") {
+    showFloatingFillButton();
+  }
+
+  if (command.action === "hide") {
+    hideFloatingFillButton();
+  }
+}
+
+async function restoreFloatingButtonVisibility() {
+  const result = await chrome.storage.local.get(FLOATING_BUTTON_VISIBLE_KEY);
+  if (result[FLOATING_BUTTON_VISIBLE_KEY] === true) {
+    showFloatingFillButton();
+  }
+}
+
+function setFloatingButtonVisible(isVisible) {
+  if (isVisible) {
+    showFloatingFillButton();
+  } else {
+    hideFloatingFillButton();
+  }
+}
+
+function showFloatingFillButton() {
+  if (document.getElementById(FLOATING_BUTTON_ID)) {
+    return true;
+  }
+
+  const added = addFloatingFillButton();
+
+  if (!added) {
+    watchForFloatingButtonFields();
+    window.setTimeout(addFloatingFillButton, 800);
+  }
+
+  return added;
+}
+
+function hideFloatingFillButton() {
+  floatingButtonObserver?.disconnect();
+  floatingButtonObserver = null;
+
+  const button = document.getElementById(FLOATING_BUTTON_ID);
+  if (!button) {
+    return false;
+  }
+
+  button.remove();
+  return true;
+}
+
+function addFloatingFillButton() {
+  if (!document.body || document.getElementById(FLOATING_BUTTON_ID) || getFillableFields().length === 0) {
+    return false;
+  }
+
+  const button = document.createElement("button");
+  const label = document.createElement("span");
+  const close = document.createElement("span");
+
+  button.id = FLOATING_BUTTON_ID;
+  button.type = "button";
+  button.title = "Fill job application fields";
+  button.setAttribute("aria-label", "Fill job application fields");
+  label.dataset.role = "label";
+  label.textContent = "Fill";
+  close.dataset.role = "close";
+  close.textContent = "x";
+  close.setAttribute("role", "button");
+  close.setAttribute("aria-label", "Hide floating fill button");
+  close.setAttribute("title", "Hide");
+  Object.assign(button.style, {
+    position: "fixed",
+    right: "16px",
+    top: "16px",
+    zIndex: "2147483647",
+    border: "0",
+    borderRadius: "999px",
+    padding: "10px 18px 10px 16px",
+    background: "#1769aa",
+    color: "#ffffff",
+    font: "600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    boxShadow: "0 8px 24px rgba(15, 23, 42, 0.24)",
+    cursor: "grab",
+    overflow: "visible",
+    touchAction: "none",
+    userSelect: "none"
+  });
+  Object.assign(close.style, {
+    position: "absolute",
+    top: "-7px",
+    right: "-7px",
+    width: "18px",
+    height: "18px",
+    borderRadius: "999px",
+    display: "grid",
+    placeItems: "center",
+    background: "#0f172a",
+    color: "#ffffff",
+    font: "700 11px/1 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    boxShadow: "0 3px 10px rgba(15, 23, 42, 0.24)",
+    cursor: "pointer"
+  });
+  button.addEventListener("mouseenter", () => {
+    button.style.background = "#0f5f9e";
+  });
+  button.addEventListener("mouseleave", () => {
+    button.style.background = "#1769aa";
+  });
+  close.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  close.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    hideFloatingButtonEverywhere();
+  });
+  makeFloatingButtonDraggable(button);
+  button.addEventListener("click", handleFloatingFillClick);
+  button.append(label, close);
+  document.body.append(button);
+  return true;
+}
+
+async function hideFloatingButtonEverywhere() {
+  await chrome.storage.local.set({
+    [FLOATING_BUTTON_VISIBLE_KEY]: false,
+    [FLOATING_BUTTON_COMMAND_KEY]: {
+      action: "hide",
+      issuedAt: Date.now()
+    }
+  });
+  hideFloatingFillButton();
+}
+
+function watchForFloatingButtonFields() {
+  if (!window.MutationObserver || floatingButtonObserver) {
+    return;
+  }
+
+  const startObserver = () => {
+    if (!document.body || document.getElementById(FLOATING_BUTTON_ID)) {
+      return;
     }
 
-    const button = document.createElement("button");
-    button.id = FLOATING_BUTTON_ID;
-    button.type = "button";
-    button.textContent = "Fill";
-    button.title = "Fill job application fields";
-    button.setAttribute("aria-label", "Fill job application fields");
-    Object.assign(button.style, {
-      position: "fixed",
-      right: "16px",
-      top: "16px",
-      zIndex: "2147483647",
-      border: "0",
-      borderRadius: "999px",
-      padding: "10px 16px",
-      background: "#1769aa",
-      color: "#ffffff",
-      font: "600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-      boxShadow: "0 8px 24px rgba(15, 23, 42, 0.24)",
-      cursor: "pointer"
+    floatingButtonObserver = new MutationObserver(() => {
+      if (addFloatingFillButton()) {
+        floatingButtonObserver?.disconnect();
+        floatingButtonObserver = null;
+      }
     });
-    button.addEventListener("mouseenter", () => {
-      button.style.background = "#0f5f9e";
-    });
-    button.addEventListener("mouseleave", () => {
-      button.style.background = "#1769aa";
-    });
-    button.addEventListener("click", handleFloatingFillClick);
-    document.body.append(button);
-    return true;
+
+    floatingButtonObserver.observe(document.body, { childList: true, subtree: true });
+    window.setTimeout(() => {
+      floatingButtonObserver?.disconnect();
+      floatingButtonObserver = null;
+    }, 15000);
   };
 
   if (document.body) {
-    addButton();
+    startObserver();
   } else {
-    document.addEventListener("DOMContentLoaded", addButton, { once: true });
+    document.addEventListener("DOMContentLoaded", startObserver, { once: true });
   }
+}
 
-  window.setTimeout(addButton, 800);
+function makeFloatingButtonDraggable(button) {
+  let dragState = null;
 
-  if (window.MutationObserver) {
-    const observer = new MutationObserver(() => {
-      if (addButton()) {
-        observer.disconnect();
-      }
-    });
+  button.addEventListener("pointerdown", (event) => {
+    if (button.disabled || event.button !== 0) {
+      return;
+    }
 
-    const startObserver = () => {
-      if (!document.body || document.getElementById(FLOATING_BUTTON_ID)) {
-        return;
-      }
-
-      observer.observe(document.body, { childList: true, subtree: true });
-      window.setTimeout(() => observer.disconnect(), 15000);
+    const rect = button.getBoundingClientRect();
+    dragState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      dragged: false
     };
 
-    if (document.body) {
-      startObserver();
-    } else {
-      document.addEventListener("DOMContentLoaded", startObserver, { once: true });
+    button.setPointerCapture(event.pointerId);
+    button.style.cursor = "grabbing";
+  });
+
+  button.addEventListener("pointermove", (event) => {
+    if (!dragState || event.pointerId !== dragState.pointerId) {
+      return;
     }
+
+    const distance = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+    if (distance > 4) {
+      dragState.dragged = true;
+    }
+
+    if (!dragState.dragged) {
+      return;
+    }
+
+    event.preventDefault();
+    moveFloatingButton(button, event.clientX - dragState.offsetX, event.clientY - dragState.offsetY);
+  });
+
+  button.addEventListener("pointerup", (event) => {
+    finishFloatingButtonDrag(button, event);
+  });
+
+  button.addEventListener("pointercancel", (event) => {
+    finishFloatingButtonDrag(button, event);
+  });
+
+  button.addEventListener("click", (event) => {
+    if (button.dataset.dragged === "true") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      button.dataset.dragged = "false";
+    }
+  }, true);
+
+  function finishFloatingButtonDrag(target, event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+
+    target.releasePointerCapture(event.pointerId);
+    target.style.cursor = "grab";
+    target.dataset.dragged = dragState.dragged ? "true" : "false";
+    dragState = null;
   }
+}
+
+function moveFloatingButton(button, left, top) {
+  const maxLeft = window.innerWidth - button.offsetWidth - FLOATING_BUTTON_MARGIN;
+  const maxTop = window.innerHeight - button.offsetHeight - FLOATING_BUTTON_MARGIN;
+  const nextLeft = clamp(left, FLOATING_BUTTON_MARGIN, Math.max(FLOATING_BUTTON_MARGIN, maxLeft));
+  const nextTop = clamp(top, FLOATING_BUTTON_MARGIN, Math.max(FLOATING_BUTTON_MARGIN, maxTop));
+
+  button.style.left = `${nextLeft}px`;
+  button.style.top = `${nextTop}px`;
+  button.style.right = "auto";
+  button.style.bottom = "auto";
 }
 
 async function handleFloatingFillClick(event) {
   const button = event.currentTarget;
-  const originalText = button.textContent;
+  const label = button.querySelector("[data-role='label']");
+  const originalText = label?.textContent || "Fill";
 
   button.disabled = true;
-  button.textContent = "Filling";
+  if (label) {
+    label.textContent = "Filling";
+  }
 
   try {
     const profile = await loadSavedProfile();
     if (!profile || Object.keys(profile).length === 0) {
-      button.textContent = "No profile";
+      if (label) {
+        label.textContent = "No profile";
+      }
       window.setTimeout(() => {
-        button.textContent = originalText;
+        if (label) {
+          label.textContent = originalText;
+        }
         button.disabled = false;
       }, 1400);
       return;
     }
 
     const count = fillJobApplication(profile);
-    button.textContent = `Filled ${count}`;
+    if (label) {
+      label.textContent = `Filled ${count}`;
+    }
   } catch (_error) {
-    button.textContent = "Try popup";
+    console.warn("Job Autofill floating button failed.", _error);
+    if (label) {
+      label.textContent = "Try popup";
+    }
   }
 
   window.setTimeout(() => {
-    button.textContent = originalText;
+    if (label) {
+      label.textContent = originalText;
+    }
     button.disabled = false;
   }, 1400);
 }
@@ -281,6 +511,8 @@ function clearFilledFields() {
 
     if (field.tagName === "SELECT") {
       field.selectedIndex = original.selectedIndex;
+    } else if (getInputType(field) === "radio") {
+      field.checked = original.checked;
     } else {
       field.value = original.value;
     }
@@ -296,20 +528,28 @@ function clearFilledFields() {
 }
 
 function getFillableFields() {
-  return Array.from(document.querySelectorAll("input, textarea, select")).filter((field) => {
-    const type = (field.getAttribute("type") || "").toLowerCase();
-    return !["button", "checkbox", "color", "file", "image", "password", "radio", "reset", "submit"].includes(type);
+  return Array.from(document.querySelectorAll("input, textarea, select, button, [role='button'], [role='radio']")).filter((field) => {
+    if (field.id === FLOATING_BUTTON_ID || field.closest?.(`#${FLOATING_BUTTON_ID}`)) {
+      return false;
+    }
+
+    const type = getInputType(field);
+    if (!["INPUT", "TEXTAREA", "SELECT"].includes(field.tagName)) {
+      return isCustomBooleanOption(field);
+    }
+
+    return !["button", "checkbox", "color", "file", "image", "password", "reset", "submit"].includes(type);
   });
 }
 
-function getProfileMatch(context, profile, usage) {
+function getProfileMatch(context, profile, usage, field) {
   const customMatch = getCustomMatch(context, profile);
   if (customMatch) {
     return customMatch;
   }
 
   const repeatMatch = getRepeatMatch(context, profile, usage);
-  const baseMatch = getBaseMatch(context, profile);
+  const baseMatch = getBaseMatch(context, profile, field);
 
   if (repeatMatch && (!baseMatch || repeatMatch.score > baseMatch.score)) {
     return repeatMatch;
@@ -318,11 +558,11 @@ function getProfileMatch(context, profile, usage) {
   return baseMatch;
 }
 
-function getBaseMatch(context, profile) {
+function getBaseMatch(context, profile, fieldElement) {
   let bestMatch = null;
 
   for (const matcher of FIELD_MATCHERS) {
-    if (isDisqualifiedMatch(context, matcher.field)) {
+    if (isDisqualifiedMatch(context, matcher.field, fieldElement)) {
       continue;
     }
 
@@ -340,7 +580,7 @@ function getBaseMatch(context, profile) {
   return bestMatch;
 }
 
-function isDisqualifiedMatch(context, field) {
+function isDisqualifiedMatch(context, field, fieldElement) {
   const text = context.all.join(" ");
 
   if (["fullName", "firstName", "lastName"].includes(field) && isReferralOrSourceContext(context)) {
@@ -351,11 +591,35 @@ function isDisqualifiedMatch(context, field) {
     return true;
   }
 
+  if (["fullName", "firstName", "lastName"].includes(field) && isMiddleNameContext(context)) {
+    return true;
+  }
+
   if ((field === "firstName" || field === "lastName") && isCombinedNameContext(context)) {
     return true;
   }
 
   if (field === "phone" && isPhoneExtensionContext(context)) {
+    return true;
+  }
+
+  if (["workAuthorization", "sponsorship"].includes(field) && isEeoSelfIdentificationContext(context)) {
+    return true;
+  }
+
+  if (isBooleanChoiceField(fieldElement) && field === "workAuthorization" && !isWorkAuthorizationQuestionContext(context)) {
+    return true;
+  }
+
+  if (isBooleanChoiceField(fieldElement) && field === "sponsorship" && !isSponsorshipQuestionContext(context)) {
+    return true;
+  }
+
+  if (field === "workAuthorization" && isSponsorshipQuestionContext(context)) {
+    return true;
+  }
+
+  if (field === "sponsorship" && isWorkAuthorizationQuestionContext(context)) {
     return true;
   }
 
@@ -368,6 +632,68 @@ function isDisqualifiedMatch(context, field) {
   }
 
   return false;
+}
+
+function isBooleanChoiceField(field) {
+  return getInputType(field) === "radio" || isCustomBooleanOption(field);
+}
+
+function isEeoSelfIdentificationContext(context) {
+  const text = context.all.join(" ");
+  const eeoWords = [
+    "disability status",
+    "veteran status",
+    "protected veteran",
+    "self identification",
+    "self identify",
+    "voluntary self identification",
+    "demographic",
+    "gender",
+    "race",
+    "ethnicity",
+    "hispanic",
+    "latino",
+    "prefer not to answer"
+  ];
+
+  return eeoWords.some((word) => includesPhrase(text, word));
+}
+
+function isWorkAuthorizationQuestionContext(context) {
+  const text = context.all.join(" ");
+  const authorizationWords = [
+    "legally authorized to work",
+    "authorized to work",
+    "legally authorized to work in the country",
+    "authorized to work in the country",
+    "country for which you are applying",
+    "eligible to work",
+    "work authorization"
+  ];
+
+  return authorizationWords.some((word) => includesPhrase(text, word));
+}
+
+function isSponsorshipQuestionContext(context) {
+  const text = context.all.join(" ");
+  const sponsorshipWords = [
+    "require sponsorship",
+    "require sponsorship for employment visa status",
+    "require sponsorship to work",
+    "require sponsorship for an immigration related employment benefit",
+    "immigration related employment benefit",
+    "immigration sponsorship",
+    "visa sponsorship"
+  ];
+
+  return sponsorshipWords.some((word) => includesPhrase(text, word));
+}
+
+function isMiddleNameContext(context) {
+  const text = context.all.join(" ");
+  const middleNameWords = ["middle name", "middle initial", "middle", "mi"];
+
+  return middleNameWords.some((word) => includesPhrase(text, word));
 }
 
 function isNamePronunciationContext(context) {
@@ -524,7 +850,7 @@ function getFieldContext(field) {
     field.placeholder,
     field.getAttribute("aria-label")
   ]);
-  const labels = normalizeParts([getLabelText(field), visualLabelText]);
+  const labels = normalizeParts([getLabelText(field), visualLabelText, getRadioGroupText(field), getCustomBooleanGroupText(field)]);
   const nearby = normalizeParts([getNearbyText(field)]);
   const section = normalizeParts([getSectionText(field)]);
 
@@ -560,6 +886,100 @@ function getLabelText(field) {
   return labels.join(" ");
 }
 
+function getRadioGroupText(field) {
+  if (getInputType(field) !== "radio") {
+    return "";
+  }
+
+  const group = getRadioGroupContainer(field);
+  if (!group) {
+    return "";
+  }
+
+  const legend = group.querySelector?.("legend, [role='heading'], h1, h2, h3, h4");
+  const groupText = legend?.textContent || group.textContent || "";
+  const questionText = getNearbyQuestionText(group);
+
+  if (groupText.length <= 400) {
+    return `${groupText} ${questionText}`;
+  }
+
+  return `${getPreviousSiblingText(group).slice(0, 220)} ${questionText}`;
+}
+
+function getRadioGroupContainer(field) {
+  const explicitGroup = field.closest("fieldset, [role='radiogroup']");
+  if (explicitGroup) {
+    return explicitGroup;
+  }
+
+  if (!field.name) {
+    return field.closest("div, section, li, form");
+  }
+
+  const radios = Array.from(document.querySelectorAll(`input[type="radio"][name="${cssEscape(field.name)}"]`));
+  if (radios.length <= 1) {
+    return field.closest("div, section, li, form");
+  }
+
+  return radios.reduce((ancestor, radio) => getCommonAncestor(ancestor, radio), radios[0].parentElement) || field.parentElement;
+}
+
+function getCommonAncestor(first, second) {
+  if (!first || !second) {
+    return first || second;
+  }
+
+  let ancestor = first;
+  while (ancestor && !ancestor.contains(second)) {
+    ancestor = ancestor.parentElement;
+  }
+
+  return ancestor;
+}
+
+function getCustomBooleanGroupText(field) {
+  if (!isCustomBooleanOption(field)) {
+    return "";
+  }
+
+  const group = getCustomBooleanGroupContainer(field);
+  if (!group) {
+    return "";
+  }
+
+  const heading = group.querySelector?.("legend, [role='heading'], h1, h2, h3, h4");
+  const groupText = heading?.textContent || group.textContent || "";
+  const questionText = getNearbyQuestionText(group);
+
+  if (groupText.length <= 500) {
+    return `${groupText} ${questionText}`;
+  }
+
+  return `${getPreviousSiblingText(group).slice(0, 260)} ${questionText}`;
+}
+
+function getCustomBooleanGroupContainer(field) {
+  const explicitGroup = field.closest("[role='radiogroup'], fieldset");
+  if (explicitGroup) {
+    return explicitGroup;
+  }
+
+  const parent = field.closest("div, section, li, fieldset, form");
+  if (!parent) {
+    return null;
+  }
+
+  const options = Array.from(parent.querySelectorAll("button, [role='button'], [role='radio']"))
+    .filter((option) => option !== field && isCustomBooleanOption(option));
+
+  if (options.length > 0) {
+    return parent;
+  }
+
+  return parent.parentElement?.closest("div, section, li, fieldset, form") || parent;
+}
+
 function getVisualLabelText(field) {
   const parts = [];
   let element = field;
@@ -588,6 +1008,30 @@ function getVisualLabelText(field) {
   }
 
   return parts.join(" ");
+}
+
+function getNearbyQuestionText(element) {
+  const parts = [];
+  let current = element;
+  let depth = 0;
+
+  while (current && depth < 5) {
+    const previousText = getPreviousSiblingText(current);
+    if (previousText) {
+      parts.push(previousText);
+    }
+
+    const parent = current.parentElement;
+    const heading = parent?.querySelector?.("legend, [role='heading'], h1, h2, h3, h4");
+    if (heading && !current.contains(heading)) {
+      parts.push(heading.textContent || "");
+    }
+
+    current = parent;
+    depth += 1;
+  }
+
+  return parts.join(" ").slice(0, 500);
 }
 
 function getNearbyText(field) {
@@ -655,6 +1099,14 @@ function isRequiredField(field) {
 }
 
 function applyValue(field, value, profileField) {
+  if (isCustomBooleanOption(field)) {
+    return selectCustomBooleanOption(field, value, profileField);
+  }
+
+  if (getInputType(field) === "radio") {
+    return selectRadioOption(field, value, profileField);
+  }
+
   if (field.tagName === "SELECT") {
     return selectOption(field, value, profileField);
   }
@@ -673,7 +1125,7 @@ function applyValue(field, value, profileField) {
 
 function selectOption(select, value, profileField) {
   const normalizedValues = getSelectValues(value, profileField);
-  const option = getClosestOption(select, normalizedValues);
+  const option = getClosestOption(select, normalizedValues, normalize(value), profileField);
 
   if (!option || select.value === option.value) {
     return false;
@@ -686,19 +1138,165 @@ function selectOption(select, value, profileField) {
   return true;
 }
 
+function selectCustomBooleanOption(option, value, profileField) {
+  if (!isMatchingBooleanOption(option, value, profileField)) {
+    return false;
+  }
+
+  if (isCustomOptionSelected(option)) {
+    return false;
+  }
+
+  rememberOriginalValue(option);
+  option.focus?.();
+  option.click();
+  option.dispatchEvent(new Event("input", { bubbles: true }));
+  option.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function selectRadioOption(radio, value, profileField) {
+  if (!isMatchingBooleanOption(radio, value, profileField)) {
+    return false;
+  }
+
+  if (radio.checked) {
+    return false;
+  }
+
+  rememberOriginalValue(radio);
+  radio.focus();
+  radio.click();
+  radio.dispatchEvent(new Event("input", { bubbles: true }));
+  radio.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function isMatchingBooleanOption(option, value, profileField) {
+  const normalizedProfileValue = normalize(value);
+  const normalizedValues = getSelectValues(value, profileField);
+  const optionValues = getBooleanOptionValues(option);
+
+  if (["workAuthorization", "sponsorship"].includes(profileField) && isBooleanProfileValue(normalizedProfileValue)) {
+    return isExpectedBooleanOption(optionValues, normalizedProfileValue, profileField);
+  }
+
+  let bestScore = 0;
+
+  for (const optionValue of optionValues) {
+    if (includesPhrase(optionValue, "prefer not to answer")) {
+      continue;
+    }
+
+    if (isOppositeBooleanOption(optionValue, normalizedProfileValue, profileField)) {
+      continue;
+    }
+
+    for (const target of normalizedValues) {
+      bestScore = Math.max(bestScore, getOptionScore(optionValue, target));
+    }
+  }
+
+  return bestScore >= 0.5;
+}
+
+function getBooleanOptionValues(option) {
+  return normalizeParts([
+    option.value,
+    option.textContent,
+    getLabelText(option),
+    option.getAttribute("aria-label")
+  ]);
+}
+
+function isBooleanProfileValue(value) {
+  return ["yes", "y", "true", "no", "n", "false"].includes(value);
+}
+
+function isExpectedBooleanOption(optionValues, normalizedProfileValue, profileField) {
+  if (optionValues.some((optionValue) => includesPhrase(optionValue, "prefer not to answer"))) {
+    return false;
+  }
+
+  const wantsYes = ["yes", "y", "true"].includes(normalizedProfileValue);
+  const wantsNo = ["no", "n", "false"].includes(normalizedProfileValue);
+  const positive = optionValues.some((optionValue) => isPositiveBooleanOptionText(optionValue, profileField));
+  const negative = optionValues.some((optionValue) => isNegativeBooleanOptionText(optionValue, profileField));
+
+  if (wantsYes) {
+    return positive && !negative;
+  }
+
+  if (wantsNo) {
+    return negative;
+  }
+
+  return false;
+}
+
+function isPositiveBooleanOptionText(value, profileField) {
+  const baseWords = ["yes", "y", "true"];
+  const profileWords = profileField === "workAuthorization"
+    ? ["authorized", "eligible"]
+    : ["require sponsorship", "need sponsorship", "will require sponsorship"];
+
+  return includesAnyPhrase(value, [...baseWords, ...profileWords]);
+}
+
+function isNegativeBooleanOptionText(value, profileField) {
+  const baseWords = ["no", "n", "false", "not"];
+  const profileWords = profileField === "sponsorship"
+    ? ["do not require sponsorship", "will not require sponsorship", "no sponsorship"]
+    : ["not authorized", "not eligible"];
+
+  return includesAnyPhrase(value, [...baseWords, ...profileWords]);
+}
+
+function isCustomBooleanOption(field) {
+  if (!field?.tagName) {
+    return false;
+  }
+
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(field.tagName)) {
+    return false;
+  }
+
+  if (field.disabled || field.getAttribute("aria-disabled") === "true") {
+    return false;
+  }
+
+  const text = normalize([field.textContent, field.getAttribute("aria-label"), field.getAttribute("value")].filter(Boolean).join(" "));
+  return ["yes", "no", "y", "n"].includes(text);
+}
+
+function isCustomOptionSelected(option) {
+  if (["true", "mixed"].includes(option.getAttribute("aria-checked")) ||
+      ["true", "mixed"].includes(option.getAttribute("aria-pressed")) ||
+      option.getAttribute("aria-selected") === "true") {
+    return true;
+  }
+
+  return /\b(selected|active|checked)\b/i.test(option.className || "");
+}
+
+function isMatchingRadioOption(radio, value, profileField) {
+  return isMatchingBooleanOption(radio, value, profileField);
+}
+
 function rememberOriginalValue(field) {
   if (filledOriginals.has(field)) {
     return;
   }
 
   filledOriginals.set(field, {
+    checked: field.checked,
     selectedIndex: field.selectedIndex,
     value: field.value
   });
   filledFields.add(field);
 }
 
-function getClosestOption(select, normalizedValues) {
+function getClosestOption(select, normalizedValues, normalizedProfileValue, profileField) {
   let best = null;
 
   for (const option of Array.from(select.options)) {
@@ -710,6 +1308,10 @@ function getClosestOption(select, normalizedValues) {
 
     for (const target of normalizedValues) {
       for (const optionValue of optionValues) {
+        if (isOppositeBooleanOption(optionValue, normalizedProfileValue, profileField)) {
+          continue;
+        }
+
         const score = getOptionScore(optionValue, target);
 
         if (!best || score > best.score) {
@@ -720,6 +1322,32 @@ function getClosestOption(select, normalizedValues) {
   }
 
   return best?.score >= 0.5 ? best.option : null;
+}
+
+function isOppositeBooleanOption(optionValue, normalizedProfileValue, profileField) {
+  if (!["workAuthorization", "sponsorship"].includes(profileField)) {
+    return false;
+  }
+
+  const wantsYes = ["yes", "y", "true"].includes(normalizedProfileValue);
+  const wantsNo = ["no", "n", "false"].includes(normalizedProfileValue);
+
+  if (!wantsYes && !wantsNo) {
+    return false;
+  }
+
+  const negative = includesAnyPhrase(optionValue, ["no", "not", "do not", "does not", "will not", "without"]);
+  const positive = includesAnyPhrase(optionValue, ["yes", "authorized", "eligible", "require sponsorship", "need sponsorship", "will require sponsorship"]);
+
+  if (wantsYes) {
+    return negative;
+  }
+
+  if (profileField === "workAuthorization") {
+    return positive && !negative;
+  }
+
+  return includesAnyPhrase(optionValue, ["yes", "require sponsorship", "need sponsorship", "will require sponsorship"]) && !negative;
 }
 
 function getOptionScore(optionValue, target) {
@@ -748,6 +1376,8 @@ function getSelectValues(value, profileField) {
   const normalizedValue = normalize(value);
   const values = new Set([normalizedValue]);
 
+  getBooleanSelectValues(normalizedValue, profileField).forEach((selectValue) => values.add(selectValue));
+
   if (profileField === "state") {
     const stateName = STATE_ALIASES[normalizedValue];
     if (stateName) {
@@ -761,6 +1391,29 @@ function getSelectValues(value, profileField) {
   }
 
   return Array.from(values).filter(Boolean);
+}
+
+function getBooleanSelectValues(normalizedValue, profileField) {
+  if (!["workAuthorization", "sponsorship"].includes(profileField)) {
+    return [];
+  }
+
+  const isYes = ["yes", "y", "true"].includes(normalizedValue);
+  const isNo = ["no", "n", "false"].includes(normalizedValue);
+
+  if (!isYes && !isNo) {
+    return [];
+  }
+
+  if (profileField === "workAuthorization") {
+    return isYes
+      ? normalizeParts(["yes", "true", "authorized", "legally authorized", "i am authorized", "eligible to work", "authorized to work in the united states"])
+      : normalizeParts(["no", "false", "not authorized", "i am not authorized", "not eligible to work", "not authorized to work in the united states"]);
+  }
+
+  return isYes
+    ? normalizeParts(["yes", "true", "require sponsorship", "need sponsorship", "will require sponsorship", "i require sponsorship", "visa sponsorship required"])
+    : normalizeParts(["no", "false", "do not require sponsorship", "does not require sponsorship", "will not require sponsorship", "i do not require sponsorship", "no sponsorship", "no visa sponsorship required"]);
 }
 
 function levenshtein(a, b) {
@@ -796,11 +1449,23 @@ function includesPhrase(text, phrase) {
   return new RegExp(`(^| )${escapeRegExp(phrase)}($| )`).test(text);
 }
 
+function includesAnyPhrase(text, phrases) {
+  return phrases.some((phrase) => includesPhrase(text, phrase));
+}
+
 function normalize(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function getInputType(field) {
+  return (field?.getAttribute?.("type") || "").toLowerCase();
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function escapeRegExp(value) {
