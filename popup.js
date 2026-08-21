@@ -1,6 +1,7 @@
 const STORAGE_KEY = "jobAutofillProfile";
 const FLOATING_BUTTON_COMMAND_KEY = "jobAutofillFloatingButtonCommand";
 const FLOATING_BUTTON_VISIBLE_KEY = "jobAutofillFloatingButtonVisible";
+const SHEETS_APPEND_BASE_URL = "https://sheets.googleapis.com/v4/spreadsheets";
 
 const form = document.querySelector("#profileForm");
 const statusEl = document.querySelector("#status");
@@ -22,7 +23,9 @@ const summaryPhone = document.querySelector("#summaryPhone");
 const summaryLinkedin = document.querySelector("#summaryLinkedin");
 const saveButton = document.querySelector("#saveProfile");
 const fillButton = document.querySelector("#fillPage");
+const saveJobButton = document.querySelector("#saveJob");
 const clearButton = document.querySelector("#clearPage");
+const resetGoogleSignInButton = document.querySelector("#resetGoogleSignIn");
 const showFloatingButton = document.querySelector("#showFloatingButton");
 const hideFloatingButton = document.querySelector("#hideFloatingButton");
 const addCustomButton = document.querySelector("#addCustom");
@@ -66,6 +69,10 @@ function readForm() {
 }
 
 function writeForm(profile = {}) {
+  if (Object.prototype.hasOwnProperty.call(profile, "jobSheetRange")) {
+    profile.jobSheetRange = normalizeJobSheetRange(profile.jobSheetRange);
+  }
+
   for (const element of form.elements) {
     if (element.name && Object.prototype.hasOwnProperty.call(profile, element.name)) {
       element.value = profile[element.name] || "";
@@ -1068,6 +1075,351 @@ async function clearPage() {
   }
 }
 
+async function saveCurrentJob() {
+  await saveProfile();
+  const profile = readForm();
+  const spreadsheetId = normalizeSpreadsheetId(profile.jobSheetId);
+  const range = normalizeJobSheetRange(profile.jobSheetRange);
+
+  if (!spreadsheetId) {
+    setStatus("Add a Google Sheet ID");
+    editPanel.hidden = false;
+    toggleEditButton.textContent = "Done";
+    form.elements.jobSheetId?.focus();
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!tab?.id) {
+    setStatus("No active tab found");
+    return;
+  }
+
+  try {
+    setStatus("Saving job");
+    const job = await getCurrentJobInfo(tab);
+    const result = await saveJobWithGoogleSheets({ spreadsheetId, range, job });
+    setStatus(`Saved to ${result?.updates?.updatedRange || range}`);
+  } catch (error) {
+    setStatus(error.message || "Could not save job");
+  }
+}
+
+function normalizeJobSheetRange(value) {
+  const range = String(value || "").trim();
+
+  if (!range || /^'?sheet1'?!a:[dh]$/i.test(range)) {
+    return "'Full Time'!A:D";
+  }
+
+  return range;
+}
+
+function normalizeSpreadsheetId(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+
+  return match?.[1] || text;
+}
+
+async function getCurrentJobInfo(tab) {
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: "JOB_AUTOFILL_GET_JOB_INFO"
+    });
+
+    if (response?.job && !isBlockedJobInfoUrl(response.job.url)) {
+      return {
+        ...response.job,
+        url: response.job.url || tab.url || "",
+        pageTitle: response.job.pageTitle || tab.title || ""
+      };
+    }
+  } catch (_error) {
+    // Some pages need a refresh before content scripts respond; tab metadata is still useful.
+  }
+
+  return {
+    savedAt: new Date().toISOString(),
+    jobTitle: tab.title || "",
+    company: "",
+    location: "",
+    pageTitle: tab.title || "",
+    url: tab.url || "",
+    source: tab.url ? new URL(tab.url).hostname : "",
+    notes: ""
+  };
+}
+
+function isBlockedJobInfoUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return [
+      "recaptcha.net",
+      "www.recaptcha.net",
+      "google.com",
+      "www.google.com",
+      "gstatic.com",
+      "www.gstatic.com"
+    ].includes(host);
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function getGoogleAccessToken() {
+  let result;
+
+  try {
+    result = await chrome.identity.getAuthToken({ interactive: true });
+  } catch (error) {
+    const message = String(error?.message || error || "");
+    if (message.toLowerCase().includes("bad client id")) {
+      throw new Error("Replace the placeholder OAuth client ID in manifest.json, then reload the extension");
+    }
+
+    throw error;
+  }
+
+  const token = typeof result === "string" ? result : result?.token;
+
+  if (!token) {
+    throw new Error("Google sign-in was not completed");
+  }
+
+  return token;
+}
+
+async function saveJobWithGoogleSheets({ spreadsheetId, range, job }) {
+  let token = await getGoogleAccessToken();
+
+  try {
+    return await saveJobToSheetWithToken({ token, spreadsheetId, range, job });
+  } catch (error) {
+    if (error.status !== 401) {
+      throw error;
+    }
+
+    await removeCachedGoogleToken(token);
+    token = await getGoogleAccessToken();
+    return saveJobToSheetWithToken({ token, spreadsheetId, range, job });
+  }
+}
+
+async function saveJobToSheetWithToken({ token, spreadsheetId, range, job }) {
+  const existingJobs = await getExistingJobsFromSheet({ token, spreadsheetId, range });
+  const duplicate = findSimilarSavedJob(job, existingJobs);
+
+  if (duplicate) {
+    const label = [duplicate.company, duplicate.position].filter(Boolean).join(" - ") || "matching job";
+    throw new Error(`Possible duplicate in row ${duplicate.rowNumber}: ${label}`);
+  }
+
+  return appendJobToSheet({ token, spreadsheetId, range, job });
+}
+
+async function removeCachedGoogleToken(token) {
+  if (!token) {
+    return;
+  }
+
+  try {
+    await chrome.identity.removeCachedAuthToken({ token });
+  } catch (_error) {
+    // If Chrome cannot remove it, the retry will surface the real auth error.
+  }
+}
+
+async function resetGoogleSignIn() {
+  setStatus("Resetting Google sign-in");
+
+  try {
+    if (typeof chrome.identity.clearAllCachedAuthTokens === "function") {
+      await chrome.identity.clearAllCachedAuthTokens();
+      setStatus("Google sign-in reset");
+      return;
+    }
+
+    let result;
+    try {
+      result = await chrome.identity.getAuthToken({ interactive: false });
+    } catch (_error) {
+      result = null;
+    }
+
+    const token = typeof result === "string" ? result : result?.token;
+    await removeCachedGoogleToken(token);
+    setStatus(token ? "Google sign-in reset" : "No cached Google sign-in found");
+  } catch (error) {
+    setStatus(error.message || "Could not reset Google sign-in");
+  }
+}
+
+async function appendJobToSheet({ token, spreadsheetId, range, job }) {
+  const url = `${SHEETS_APPEND_BASE_URL}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      majorDimension: "ROWS",
+      values: [[
+        job.company || "",
+        job.jobTitle || "",
+        cleanJobUrl(job.url),
+        formatSheetDate(new Date())
+      ]]
+    })
+  });
+
+  if (!response.ok) {
+    let message = "Google Sheets save failed";
+    try {
+      const body = await response.json();
+      message = body?.error?.message || message;
+    } catch (_error) {
+      // Keep the fallback message.
+    }
+    if (response.status === 404 || message.toLowerCase().includes("requested entity was not found")) {
+      const error = new Error("Spreadsheet or tab not found. Check the Google Sheet ID and the 'Full Time' tab name.");
+      error.status = response.status;
+      throw error;
+    }
+
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  return response.json();
+}
+
+async function getExistingJobsFromSheet({ token, spreadsheetId, range }) {
+  const url = `${SHEETS_APPEND_BASE_URL}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (response.status === 404) {
+    const error = new Error("Spreadsheet or tab not found. Check the Google Sheet ID and the 'Full Time' tab name.");
+    error.status = response.status;
+    throw error;
+  }
+
+  if (!response.ok) {
+    let message = "Could not check existing jobs";
+    try {
+      const body = await response.json();
+      message = body?.error?.message || message;
+    } catch (_error) {
+      // Keep the fallback message.
+    }
+
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  const body = await response.json();
+  return (body.values || []).map((row, index) => ({
+    rowNumber: index + 1,
+    company: String(row[0] || "").trim(),
+    position: String(row[1] || "").trim(),
+    link: String(row[2] || "").trim()
+  })).filter((entry) => {
+    return entry.rowNumber > 1 && (entry.company || entry.position || entry.link);
+  });
+}
+
+function findSimilarSavedJob(job, existingJobs) {
+  const current = {
+    company: normalizeComparable(job.company),
+    position: normalizeComparable(job.jobTitle),
+    link: cleanJobUrl(job.url)
+  };
+
+  return existingJobs.find((entry) => {
+    const saved = {
+      company: normalizeComparable(entry.company),
+      position: normalizeComparable(entry.position),
+      link: cleanJobUrl(entry.link)
+    };
+
+    if (current.link && saved.link && current.link === saved.link) {
+      return true;
+    }
+
+    if (!current.company || !current.position || !saved.company || !saved.position) {
+      return false;
+    }
+
+    return similarityScore(current.company, saved.company) >= 0.82
+      && similarityScore(current.position, saved.position) >= 0.78;
+  });
+}
+
+function cleanJobUrl(value) {
+  try {
+    const url = new URL(value);
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch (_error) {
+    return String(value || "").split("?")[0].split("#")[0];
+  }
+}
+
+function similarityScore(left, right) {
+  if (!left || !right) {
+    return 0;
+  }
+
+  if (left === right) {
+    return 1;
+  }
+
+  if (left.includes(right) || right.includes(left)) {
+    return 0.9;
+  }
+
+  return 1 - levenshteinDistance(left, right) / Math.max(left.length, right.length);
+}
+
+function levenshteinDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_value, index) => index);
+
+  for (let i = 1; i <= left.length; i += 1) {
+    let last = i - 1;
+    previous[0] = i;
+
+    for (let j = 1; j <= right.length; j += 1) {
+      const old = previous[j];
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      previous[j] = Math.min(
+        previous[j] + 1,
+        previous[j - 1] + 1,
+        last + cost
+      );
+      last = old;
+    }
+  }
+
+  return previous[right.length];
+}
+
+function formatSheetDate(date) {
+  const month = String(date.getMonth() + 1);
+  const day = String(date.getDate());
+  const year = date.getFullYear();
+
+  return `${month}/${day}/${year}`;
+}
+
 async function showPageButton() {
   await saveProfile();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1121,7 +1473,9 @@ async function hidePageButton() {
 
 saveButton.addEventListener("click", saveProfile);
 fillButton.addEventListener("click", fillPage);
+saveJobButton.addEventListener("click", saveCurrentJob);
 clearButton.addEventListener("click", clearPage);
+resetGoogleSignInButton.addEventListener("click", resetGoogleSignIn);
 showFloatingButton.addEventListener("click", showPageButton);
 hideFloatingButton.addEventListener("click", hidePageButton);
 addCustomButton.addEventListener("click", addCustomAnswer);

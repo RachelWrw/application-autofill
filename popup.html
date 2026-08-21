@@ -36,6 +36,7 @@
       <section class="quick-actions">
         <button id="clearPage" class="ghost" type="button">Clear</button>
         <button id="fillPage" class="primary" type="button">Fill Page</button>
+        <button id="saveJob" class="primary" type="button">Save Job</button>
         <button id="hideFloatingButton" class="ghost" type="button">Hide Button</button>
         <button id="showFloatingButton" class="ghost" type="button">Show Button</button>
       </section>
@@ -99,6 +100,17 @@
             <span>Additional URL</span>
             <input name="additionalLink" type="url">
           </label>
+          <label class="wide">
+            <span>Google Sheet ID</span>
+            <input name="jobSheetId" placeholder="Spreadsheet ID from the Google Sheet URL">
+          </label>
+          <label class="wide">
+            <span>Google Sheet range</span>
+            <input name="jobSheetRange" placeholder="'Full Time'!A:D">
+          </label>
+          <div class="wide settings-actions">
+            <button id="resetGoogleSignIn" class="ghost" type="button">Reset Google Sign-in</button>
+          </div>
           <label class="wide">
             <span>Skills</span>
             <input name="skills" placeholder="Excel, SQL, Tableau">

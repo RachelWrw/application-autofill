@@ -198,6 +198,11 @@ button {
   gap: 8px;
 }
 
+.settings-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .resume-panel .resource-row {
   margin-top: 12px;
 }
@@ -257,7 +262,7 @@ button {
 
 .quick-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);

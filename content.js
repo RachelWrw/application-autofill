@@ -134,6 +134,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
+  if (message?.type === "JOB_AUTOFILL_GET_JOB_INFO") {
+    if (window.top !== window) {
+      return false;
+    }
+
+    sendResponse({ job: getCurrentJobInfo() });
+    return false;
+  }
+
   return false;
 });
 
@@ -187,6 +196,106 @@ function fillJobApplication(profile) {
   });
 
   return count;
+}
+
+function getCurrentJobInfo() {
+  return {
+    savedAt: new Date().toISOString(),
+    jobTitle: getJobTitle(),
+    company: getCompanyName(),
+    location: getJobLocation(),
+    pageTitle: document.title || "",
+    url: window.location.href,
+    source: window.location.hostname,
+    notes: ""
+  };
+}
+
+function getJobTitle() {
+  return firstText([
+    "[data-automation-id='jobPostingHeader']",
+    "[data-testid='job-title']",
+    "[class*='job'][class*='title' i]",
+    "[class*='position'][class*='title' i]",
+    "h1"
+  ]) || cleanTitle(document.title);
+}
+
+function getCompanyName() {
+  const company = getKnownCareerSiteCompanyName() || getAshbyCompanyName() || firstMeta(["og:site_name", "application-name"]) || firstText([
+    "[data-testid='company-name']",
+    "[class*='company' i]",
+    "[class*='employer' i]"
+  ]);
+
+  if (company) {
+    return company;
+  }
+
+  return window.location.hostname.replace(/^www\./, "");
+}
+
+function getKnownCareerSiteCompanyName() {
+  const host = window.location.hostname.toLowerCase().replace(/^www\./, "");
+  const knownCompanies = {
+    "stripe.com": "Stripe"
+  };
+
+  return knownCompanies[host] || "";
+}
+
+function getAshbyCompanyName() {
+  const host = window.location.hostname.toLowerCase();
+  if (!host.endsWith("ashbyhq.com")) {
+    return "";
+  }
+
+  const [companySlug] = window.location.pathname.split("/").filter(Boolean);
+  return titleCaseSlug(companySlug);
+}
+
+function titleCaseSlug(value) {
+  return String(value || "")
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function getJobLocation() {
+  return firstText([
+    "[data-testid='job-location']",
+    "[class*='location' i]",
+    "[class*='office' i]"
+  ]);
+}
+
+function firstText(selectors) {
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    const text = normalizeWhitespace(element?.textContent || "");
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function firstMeta(names) {
+  for (const name of names) {
+    const element = document.querySelector(`meta[property="${cssEscape(name)}"], meta[name="${cssEscape(name)}"]`);
+    const text = normalizeWhitespace(element?.content || "");
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function cleanTitle(title) {
+  return normalizeWhitespace(String(title || "").split("|")[0].split(" - ")[0]);
 }
 
 function handleFloatingButtonCommand(command) {
@@ -1458,6 +1567,10 @@ function normalize(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function getInputType(field) {
