@@ -752,7 +752,7 @@ function getBaseMatch(context, profile, fieldElement) {
 }
 
 function isDisqualifiedMatch(context, field, fieldElement) {
-  const text = context.all.join(" ");
+  const text = context.text;
 
   if (["fullName", "firstName", "lastName"].includes(field) && isReferralOrSourceContext(context)) {
     return true;
@@ -810,7 +810,7 @@ function isBooleanChoiceField(field) {
 }
 
 function isEeoSelfIdentificationContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const eeoWords = [
     "disability status",
     "veteran status",
@@ -831,7 +831,7 @@ function isEeoSelfIdentificationContext(context) {
 }
 
 function isWorkAuthorizationQuestionContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const authorizationWords = [
     "legally authorized to work",
     "authorized to work",
@@ -846,7 +846,7 @@ function isWorkAuthorizationQuestionContext(context) {
 }
 
 function isSponsorshipQuestionContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const sponsorshipWords = [
     "require sponsorship",
     "require sponsorship for employment visa status",
@@ -861,28 +861,28 @@ function isSponsorshipQuestionContext(context) {
 }
 
 function isMiddleNameContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const middleNameWords = ["middle name", "middle initial", "middle", "mi"];
 
   return middleNameWords.some((word) => includesPhrase(text, word));
 }
 
 function isNamePronunciationContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const pronunciationWords = ["pronunciation", "pronouciation", "pronounce", "phonetic", "name pronunciation"];
 
   return pronunciationWords.some((word) => includesPhrase(text, word));
 }
 
 function isPhoneExtensionContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const extensionWords = ["phone extension", "extension", "ext"];
 
   return extensionWords.some((word) => includesPhrase(text, word));
 }
 
 function isReferralOrSourceContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const referralWords = ["referral", "referring", "referred", "employee referral", "referring person"];
   const sourceWords = ["heard about us", "hear about us", "where you heard", "how did you hear", "source"];
 
@@ -893,7 +893,7 @@ function isReferralOrSourceContext(context) {
 }
 
 function isCombinedNameContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
 
   return (
     includesPhrase(text, "first and last name") ||
@@ -903,7 +903,7 @@ function isCombinedNameContext(context) {
 }
 
 function isGenericUrlContext(context) {
-  const text = context.all.join(" ");
+  const text = context.text;
   const allowed = ["portfolio", "personal website", "personal site", "website"];
   const generic = ["url", "link", "links", "homepage", "home page"];
 
@@ -993,13 +993,26 @@ function getCustomMatch(context, profile) {
   return null;
 }
 
+const matcherKeyCache = new WeakMap();
+
+function getMatcherNormalizedKeys(matcher) {
+  let normalizedKeys = matcherKeyCache.get(matcher);
+
+  if (!normalizedKeys) {
+    normalizedKeys = matcher.keys.map((key) => {
+      const normalizedKey = normalize(key);
+      return { normalizedKey, keyWeight: Math.min(normalizedKey.length, 20) };
+    });
+    matcherKeyCache.set(matcher, normalizedKeys);
+  }
+
+  return normalizedKeys;
+}
+
 function getMatcherScore(context, matcher) {
   let score = 0;
 
-  for (const key of matcher.keys) {
-    const normalizedKey = normalize(key);
-    const keyWeight = Math.min(normalizedKey.length, 20);
-
+  for (const { normalizedKey, keyWeight } of getMatcherNormalizedKeys(matcher)) {
     score = Math.max(score, getBestPartScore(context.labels, normalizedKey, 100 + keyWeight));
     score = Math.max(score, getBestPartScore(context.attributes, normalizedKey, 70 + keyWeight));
     score = Math.max(score, getBestPartScore(context.nearby, normalizedKey, 35 + keyWeight));
@@ -1025,12 +1038,15 @@ function getFieldContext(field) {
   const nearby = normalizeParts([getNearbyText(field)]);
   const section = normalizeParts([getSectionText(field)]);
 
+  const all = [...attributes, ...labels, ...nearby];
+
   return {
     attributes,
     labels,
     nearby,
     section,
-    all: [...attributes, ...labels, ...nearby]
+    all,
+    text: all.join(" ")
   };
 }
 

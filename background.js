@@ -60,7 +60,7 @@ async function getGoogleAccessToken() {
   } catch (error) {
     const message = String(error?.message || error || "");
     if (message.toLowerCase().includes("bad client id")) {
-      throw new Error("Check OAuth client ID");
+      throw new Error("Replace the placeholder OAuth client ID in manifest.json, then reload the extension");
     }
 
     throw error;
@@ -69,7 +69,7 @@ async function getGoogleAccessToken() {
   const token = typeof result === "string" ? result : result?.token;
 
   if (!token) {
-    throw new Error("Google sign-in needed");
+    throw new Error("Google sign-in was not completed");
   }
 
   return token;
@@ -171,7 +171,7 @@ async function googleSheetsError(response, fallbackMessage) {
   }
 
   if (response.status === 404 || message.toLowerCase().includes("requested entity was not found")) {
-    message = "Sheet or tab not found";
+    message = "Spreadsheet or tab not found. Check the Google Sheet ID and the 'Full Time' tab name.";
   }
 
   const error = new Error(message);
