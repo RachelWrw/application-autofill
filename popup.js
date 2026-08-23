@@ -1100,7 +1100,12 @@ async function saveCurrentJob() {
     setStatus("Saving job");
     const job = await getCurrentJobInfo(tab);
     const result = await saveJobWithGoogleSheets({ spreadsheetId, range, job });
-    setStatus(`Saved to ${result?.updates?.updatedRange || range}`);
+    const savedRange = result?.updates?.updatedRange || range;
+    if (result?.duplicate) {
+      setStatus(`Saved to ${savedRange}; possible duplicate row ${result.duplicate.rowNumber}`);
+    } else {
+      setStatus(`Saved to ${savedRange}`);
+    }
   } catch (error) {
     setStatus(error.message || "Could not save job");
   }
@@ -1210,13 +1215,9 @@ async function saveJobWithGoogleSheets({ spreadsheetId, range, job }) {
 async function saveJobToSheetWithToken({ token, spreadsheetId, range, job }) {
   const existingJobs = await getExistingJobsFromSheet({ token, spreadsheetId, range });
   const duplicate = findSimilarSavedJob(job, existingJobs);
+  const result = await appendJobToSheet({ token, spreadsheetId, range, job });
 
-  if (duplicate) {
-    const label = [duplicate.company, duplicate.position].filter(Boolean).join(" - ") || "matching job";
-    throw new Error(`Possible duplicate in row ${duplicate.rowNumber}: ${label}`);
-  }
-
-  return appendJobToSheet({ token, spreadsheetId, range, job });
+  return duplicate ? { ...result, duplicate } : result;
 }
 
 async function removeCachedGoogleToken(token) {
@@ -1267,7 +1268,7 @@ async function appendJobToSheet({ token, spreadsheetId, range, job }) {
     body: JSON.stringify({
       majorDimension: "ROWS",
       values: [[
-        job.company || "",
+        cleanCompanyName(job.company),
         job.jobTitle || "",
         cleanJobUrl(job.url),
         formatSheetDate(new Date())
@@ -1372,6 +1373,37 @@ function cleanJobUrl(value) {
   } catch (_error) {
     return String(value || "").split("?")[0].split("#")[0];
   }
+}
+
+function cleanCompanyName(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      return cleanCompanyName(new URL(text).hostname);
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  const withoutWww = text.replace(/^www\./i, "");
+  const domainMatch = withoutWww.match(/^([a-z0-9][a-z0-9-]*)(?:\.(?:com|co|io|ai|net|org))+$/i);
+  if (domainMatch) {
+    return titleCaseWords(domainMatch[1]);
+  }
+
+  return text;
+}
+
+function titleCaseWords(value) {
+  return String(value || "")
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 }
 
 function similarityScore(left, right) {

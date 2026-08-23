@@ -222,11 +222,11 @@ function getJobTitle() {
 }
 
 function getCompanyName() {
-  const company = getKnownCareerSiteCompanyName() || getAshbyCompanyName() || firstMeta(["og:site_name", "application-name"]) || firstText([
+  const company = cleanCompanyName(getKnownCareerSiteCompanyName() || getAshbyCompanyName() || firstMeta(["og:site_name", "application-name"]) || firstText([
     "[data-testid='company-name']",
     "[class*='company' i]",
     "[class*='employer' i]"
-  ]);
+  ]));
 
   if (company) {
     return company;
@@ -251,7 +251,7 @@ function getAshbyCompanyName() {
   }
 
   const [companySlug] = window.location.pathname.split("/").filter(Boolean);
-  return titleCaseSlug(companySlug);
+  return titleCaseSlug(companySlug?.replace(/\.(com|co|io|ai|net|org)$/i, ""));
 }
 
 function titleCaseSlug(value) {
@@ -260,6 +260,29 @@ function titleCaseSlug(value) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
+}
+
+function cleanCompanyName(value) {
+  const text = normalizeWhitespace(value);
+  if (!text) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      return cleanCompanyName(new URL(text).hostname);
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  const withoutWww = text.replace(/^www\./i, "");
+  const domainMatch = withoutWww.match(/^([a-z0-9][a-z0-9-]*)(?:\.(?:com|co|io|ai|net|org))+$/i);
+  if (domainMatch) {
+    return titleCaseSlug(domainMatch[1]);
+  }
+
+  return text;
 }
 
 function getJobLocation() {
@@ -360,41 +383,68 @@ function hideFloatingFillButton() {
 }
 
 function addFloatingFillButton() {
-  if (!document.body || document.getElementById(FLOATING_BUTTON_ID) || getFillableFields().length === 0) {
+  if (!document.body || document.getElementById(FLOATING_BUTTON_ID)) {
     return false;
   }
 
-  const button = document.createElement("button");
-  const label = document.createElement("span");
+  const widget = document.createElement("div");
+  const fillButton = document.createElement("button");
+  const saveButton = document.createElement("button");
   const close = document.createElement("span");
 
-  button.id = FLOATING_BUTTON_ID;
-  button.type = "button";
-  button.title = "Fill job application fields";
-  button.setAttribute("aria-label", "Fill job application fields");
-  label.dataset.role = "label";
-  label.textContent = "Fill";
+  widget.id = FLOATING_BUTTON_ID;
+  widget.setAttribute("role", "group");
+  widget.setAttribute("aria-label", "Job Autofill actions");
+  fillButton.type = "button";
+  fillButton.title = "Fill job application fields";
+  fillButton.setAttribute("aria-label", "Fill job application fields");
+  fillButton.dataset.role = "fill";
+  fillButton.textContent = "Fill";
+  saveButton.type = "button";
+  saveButton.title = "Save this job to Google Sheets";
+  saveButton.setAttribute("aria-label", "Save this job to Google Sheets");
+  saveButton.dataset.role = "save";
+  saveButton.textContent = "Save";
   close.dataset.role = "close";
   close.textContent = "x";
   close.setAttribute("role", "button");
   close.setAttribute("aria-label", "Hide floating fill button");
   close.setAttribute("title", "Hide");
-  Object.assign(button.style, {
+  Object.assign(widget.style, {
     position: "fixed",
     right: "16px",
     top: "16px",
     zIndex: "2147483647",
+    display: "grid",
+    gap: "4px",
+    padding: "4px",
     border: "0",
-    borderRadius: "999px",
-    padding: "10px 18px 10px 16px",
-    background: "#1769aa",
-    color: "#ffffff",
-    font: "600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    borderRadius: "14px",
+    background: "#ffffff",
     boxShadow: "0 8px 24px rgba(15, 23, 42, 0.24)",
     cursor: "grab",
     overflow: "visible",
     touchAction: "none",
     userSelect: "none"
+  });
+  [fillButton, saveButton].forEach((actionButton) => {
+    Object.assign(actionButton.style, {
+      minWidth: "58px",
+      minHeight: "34px",
+      border: "0",
+      borderRadius: "10px",
+      padding: "8px 12px",
+      background: "#1769aa",
+      color: "#ffffff",
+      font: "600 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      cursor: "pointer"
+    });
+    actionButton.addEventListener("mouseenter", () => {
+      actionButton.style.background = "#0f5f9e";
+    });
+    actionButton.addEventListener("mouseleave", () => {
+      actionButton.style.background = "#1769aa";
+    });
   });
   Object.assign(close.style, {
     position: "absolute",
@@ -411,12 +461,6 @@ function addFloatingFillButton() {
     boxShadow: "0 3px 10px rgba(15, 23, 42, 0.24)",
     cursor: "pointer"
   });
-  button.addEventListener("mouseenter", () => {
-    button.style.background = "#0f5f9e";
-  });
-  button.addEventListener("mouseleave", () => {
-    button.style.background = "#1769aa";
-  });
   close.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -426,10 +470,11 @@ function addFloatingFillButton() {
     event.stopPropagation();
     hideFloatingButtonEverywhere();
   });
-  makeFloatingButtonDraggable(button);
-  button.addEventListener("click", handleFloatingFillClick);
-  button.append(label, close);
-  document.body.append(button);
+  makeFloatingButtonDraggable(widget);
+  fillButton.addEventListener("click", handleFloatingFillClick);
+  saveButton.addEventListener("click", handleFloatingSaveClick);
+  widget.append(fillButton, saveButton, close);
+  document.body.append(widget);
   return true;
 }
 
@@ -479,7 +524,8 @@ function makeFloatingButtonDraggable(button) {
   let dragState = null;
 
   button.addEventListener("pointerdown", (event) => {
-    if (button.disabled || event.button !== 0) {
+    const actionTarget = event.target?.closest?.("button, [data-role='close']");
+    if (event.button !== 0 || actionTarget) {
       return;
     }
 
@@ -557,46 +603,62 @@ function moveFloatingButton(button, left, top) {
 
 async function handleFloatingFillClick(event) {
   const button = event.currentTarget;
-  const label = button.querySelector("[data-role='label']");
-  const originalText = label?.textContent || "Fill";
+  const originalText = button.textContent || "Fill";
 
   button.disabled = true;
-  if (label) {
-    label.textContent = "Filling";
-  }
+  button.textContent = "Filling";
 
   try {
     const profile = await loadSavedProfile();
     if (!profile || Object.keys(profile).length === 0) {
-      if (label) {
-        label.textContent = "No profile";
-      }
+      button.textContent = "No profile";
       window.setTimeout(() => {
-        if (label) {
-          label.textContent = originalText;
-        }
+        button.textContent = originalText;
         button.disabled = false;
       }, 1400);
       return;
     }
 
     const count = fillJobApplication(profile);
-    if (label) {
-      label.textContent = `Filled ${count}`;
-    }
+    button.textContent = `Filled ${count}`;
   } catch (_error) {
     console.warn("Job Autofill floating button failed.", _error);
-    if (label) {
-      label.textContent = "Try popup";
-    }
+    button.textContent = "Try popup";
   }
 
   window.setTimeout(() => {
-    if (label) {
-      label.textContent = originalText;
-    }
+    button.textContent = originalText;
     button.disabled = false;
   }, 1400);
+}
+
+async function handleFloatingSaveClick(event) {
+  const button = event.currentTarget;
+  const originalText = button.textContent || "Save";
+
+  button.disabled = true;
+  button.textContent = "Saving";
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "JOB_AUTOFILL_SAVE_JOB",
+      job: getCurrentJobInfo()
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.message || "Try popup");
+    }
+
+    button.textContent = response.result?.duplicate ? "Dup saved" : "Saved";
+  } catch (error) {
+    console.warn("Job Autofill floating save failed.", error);
+    button.textContent = String(error?.message || "Try popup").slice(0, 18);
+  }
+
+  window.setTimeout(() => {
+    button.textContent = originalText;
+    button.disabled = false;
+  }, 1800);
 }
 
 async function loadSavedProfile() {
